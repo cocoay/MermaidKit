@@ -1,0 +1,90 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # Poll upstream every 6 hours for main + new tags.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      sync_tags:
+        description: "Also create missing tags on fork HEAD"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/2389-research/MermaidKit.git
+          git fetch upstream --tags
+          git fetch origin --tags
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream/main into fork main
+        id: merge
+        run: |
+          set -euo pipefail
+          git checkout main
+          git pull --ff-only origin main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "already_up_to_date=true" >> "$GITHUB_OUTPUT"
+            echo "Fork main already contains upstream/main"
+            exit 0
+          fi
+
+          echo "already_up_to_date=false" >> "$GITHUB_OUTPUT"
+          # Preserve fork commits; fail on conflict so changes are never dropped silently.
+          git merge --no-edit upstream/main
+
+      - name: Push main
+        if: steps.merge.outputs.already_up_to_date != 'true'
+        run: git push origin main
+
+      - name: Create missing tags on fork HEAD
+        if: github.event_name == 'schedule' || inputs.sync_tags
+        run: |
+          set -euo pipefail
+
+          # Tag names only — never push upstream tag objects (those point at
+          # upstream commits and would drop fork-local modifications).
+          git ls-remote --tags upstream 'refs/tags/*' \
+            | awk '{print $2}' | sed 's#refs/tags/##' | sed 's/\^{}//' \
+            | grep -E '^v[0-9]' | sort -u > /tmp/upstream-tags.txt
+
+          git ls-remote --tags origin 'refs/tags/*' \
+            | awk '{print $2}' | sed 's#refs/tags/##' | sed 's/\^{}//' \
+            | sort -u > /tmp/origin-tags.txt
+
+          created=0
+          while read -r tag; do
+            [ -z "$tag" ] && continue
+            if grep -Fxq "$tag" /tmp/origin-tags.txt; then
+              continue
+            fi
+            git tag -a "$tag" HEAD -m "Fork release $tag (own commits preserved)"
+            git push origin "refs/tags/$tag"
+            echo "Tagged fork HEAD as $tag ($(git rev-parse --short HEAD))"
+            created=$((created + 1))
+          done < <(comm -23 /tmp/upstream-tags.txt /tmp/origin-tags.txt)
+
+          echo "Created $created new tag(s)"
