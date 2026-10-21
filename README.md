@@ -402,7 +402,7 @@ CLI:
   per-type models → `DiagramLayoutEngine.layout(_:measure:)` → pure geometry
   (frames, polylines). Text measurement is injected (`DiagramTextMeasurer`),
   so layout is fully testable without a display server.
-- **MermaidRender** — CoreGraphics/CoreText drawing on macOS 14+, iOS 17+,
+- **MermaidRender** — CoreGraphics/CoreText drawing on macOS 13+, iOS 16+,
   and visionOS 1+, and optional Silica (Cairo/FontConfig) drawing on Linux.
   The Linux raster backend is behind the `LinuxRaster` **package trait** (default
   OFF): a `from:`-pinned consumer resolves a Silica-free graph on every platform
@@ -560,9 +560,8 @@ MermaidKit renders diagrams in a native Apple aesthetic (system fonts or
 your theme's `fontFamily`, your theme's colors) rather than pixel-cloning mermaid.js's default skin. Same
 structure, native skin.
 
-**Why macOS 14 / iOS 17?** Those are the floors of the app MermaidKit was
-extracted from. Nothing fundamental blocks lower floors; it's tracked, and
-PRs verifying older OSes are welcome.
+**Why macOS 13 / iOS 16?** Those are the current deployment floors.
+Nothing fundamental blocks lower floors; PRs verifying older OSes are welcome.
 
 **Is it safe to render untrusted input?** That's the design point of the
 input caps, numeric sanitation, and the adversarial suite. No network, no
