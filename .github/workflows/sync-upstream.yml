@@ -65,11 +65,19 @@ jobs:
         run: |
           set -euo pipefail
 
+          MIN_TAG="v2.7.0"
+
           # Tag names only — never push upstream tag objects (those point at
           # upstream commits and would drop fork-local modifications).
+          # Skip anything older than MIN_TAG.
           git ls-remote --tags upstream 'refs/tags/*' \
             | awk '{print $2}' | sed 's#refs/tags/##' | sed 's/\^{}//' \
-            | grep -E '^v[0-9]' | sort -u > /tmp/upstream-tags.txt
+            | grep -E '^v[0-9]' | sort -u | while read -r t; do
+              lowest=$(printf '%s\n' "$MIN_TAG" "$t" | sort -V | head -1)
+              if [ "$lowest" = "$MIN_TAG" ]; then
+                echo "$t"
+              fi
+            done > /tmp/upstream-tags.txt
 
           git ls-remote --tags origin 'refs/tags/*' \
             | awk '{print $2}' | sed 's#refs/tags/##' | sed 's/\^{}//' \
@@ -87,4 +95,4 @@ jobs:
             created=$((created + 1))
           done < <(comm -23 /tmp/upstream-tags.txt /tmp/origin-tags.txt)
 
-          echo "Created $created new tag(s)"
+          echo "Created $created new tag(s) (>= $MIN_TAG)"
