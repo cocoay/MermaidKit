@@ -28,7 +28,13 @@ ends the run.
 
 **Each chart is one of:**
 
-- **agree:** both draw the same thing.
+- **agree:** both draw the same thing. This includes a label MermaidKit shows
+  with tag-like text that the browser hides as an element it doesn't know
+  (`List<String>`, which mermaid shows as "List", or one left unclosed at the
+  end, `List<String`). MermaidKit keeps that text
+  on purpose, so nothing the author wrote disappears. The summary counts
+  those charts, and the rule checks itself before every run (exit 2 if it
+  would excuse anything else, such as a real `<b>` tag).
 - **lenient:** mermaid errors and MermaidKit draws. This is allowed: degrade,
   never break.
 - **rejects:** mermaid draws and MermaidKit returns nothing. A divergence.
@@ -77,6 +83,11 @@ isn't compared: MermaidKit themes every node alike on purpose, and what it
 must do with styling lines, keep reading the rest of the chart, is already
 compared. Edge order isn't either: it only matters to `linkStyle N`, which
 MermaidKit ignores.
+What's left in the baseline is mostly one mermaid quirk MermaidKit doesn't
+copy: before it parses, mermaid deletes the last `;` of any line matching
+`style.*:\S*#.*;` (meant for `style A fill:#f96;`), so a line that merely
+mentions a node named `styleguide` loses a label's `;` (`#35;` stops being
+a reference). MermaidKit reads the label as written.
 A subgraph's direction compares as declared. mermaid's renderer ignores it
 when a member links outside the subgraph, a limitation its docs list;
 MermaidKit honors it on purpose.

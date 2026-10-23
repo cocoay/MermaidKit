@@ -363,6 +363,32 @@ final class ParserHonestyTests: XCTestCase {
         XCTAssertEqual(c.nodes.first?.label, "&nosuch; and #12; and &bogus;")
     }
 
+    /// Character references read as a browser reads them (HTML's
+    /// named-reference algorithm, over the full WHATWG table): the longest
+    /// name that matches wins, a legacy name (`&amp`, `&copy`, `&lt`…) needs
+    /// no `;`, and neither does a numeric one. Mermaid's `#name;` is
+    /// `&name;`, read the same way. Each expectation is mermaid 12.2.0's.
+    func testCharacterReferencesReadAsBrowsersDo() {
+        let cases: [(String, String)] = [
+            ("&amp more", "& more"), ("&copy 2024", "© 2024"), ("&lt", "<"), ("&LT", "<"),
+            ("x &amp", "x &"), ("&ampfoo", "&foo"), ("&notit; x", "¬it; x"), ("&AMP;", "&"),
+            ("&#169 x", "© x"), ("&#x41B", "Л"), ("&#128512", "😀"),
+            ("&Aacute;", "Á"), ("&ccedil;a", "ça"), ("&NotEqualTilde;", "≂̸"),
+            ("#copyx;", "©x;"), ("#notin;", "∉"), ("#amp;", "&"),
+            ("&unknown; y", "&unknown; y"), ("a&b", "a&b"), ("&amp;amp;", "&amp;"), ("#35;35;", "#35;"),
+        ]
+        for (raw, shown) in cases {
+            XCTAssertEqual(MermaidParser.labelText(raw), shown, raw)
+        }
+    }
+
+    /// `&#169;` reads "©", as its author meant. (mermaid 12.2.0 shows "&©":
+    /// its `#169;` rewrite strands the `&`. A deliberate leniency, as with
+    /// tag-like text.)
+    func testANumericReferenceWithItsAmpersandIsOneReference() {
+        XCTAssertEqual(MermaidParser.labelText("&#169; and &#xA9"), "© and ©")
+    }
+
     /// Numeric references read as a browser reads them: 0x80–0x9F as
     /// Windows-1252. A C1 control, a noncharacter or a non-scalar stays as
     /// written, never reaching SVG or a terminal.
@@ -447,6 +473,99 @@ final class ParserHonestyTests: XCTestCase {
         XCTAssertEqual(DiagramLayoutEngine.brLines(label).count, 1, label)
         XCTAssertEqual(c.nodes.first { $0.id == "C" }?.label, "<brilliant>", "only a break tag stays encoded")
         XCTAssertEqual(DiagramLayoutEngine.brLines(c.nodes.first { $0.id == "B" }?.label ?? "").count, 2)
+        // Decoding never makes a break the text as written doesn't have,
+        // whichever character a reference supplies (`<`, `b`, `r`, the
+        // closing `>`, either half of `\n`), however far the `>`.
+        let far = "&ltbr " + String(repeating: "x", count: 300) + ">"
+        for spelled in ["&ltbr&gt", "&LT;BR>", "&lt;b&#114;>", "&#60br>", "&bsol;&#110;", "&bsol;n",
+                        "<b&#114;>", "<B&#82;>", "<br&#62;", "\\&#110;", far] {
+            let shown = MermaidParser.labelText("a \(spelled) b")
+            XCTAssertEqual(DiagramLayoutEngine.brLines(shown).count, 1, "\(spelled) → \(shown)")
+            XCTAssertFalse(shown.contains("\\n"), "\(spelled) → \(shown)")
+        }
+        // A break the author wrote still breaks, entities inside it or not.
+        for written in ["a<br>b", "a <br &amp; x> b", "a <BR/> b"] {
+            XCTAssertEqual(DiagramLayoutEngine.brLines(MermaidParser.labelText(written)).count, 2, written)
+        }
+    }
+
+    /// Reading a label never spells a line break its text doesn't have as
+    /// written: not by decoding a reference, not by dropping a formatting tag
+    /// between two halves (`\<i>n`), not by both. Labels built from every
+    /// fragment a break is made of, from a fixed seed. (A reference to a line
+    /// separator, `&#8232;`, is a break as written; see SceneLineBreakTests.)
+    func testReadingALabelNeverMakesALineBreak() {
+        let breakTag = try! NSRegularExpression(pattern: "<br\\b[^>]*>", options: .caseInsensitive)
+        func breaks(_ t: String) -> Int {
+            breakTag.numberOfMatches(in: t, range: NSRange(t.startIndex..., in: t))
+                + t.components(separatedBy: "\\n").count - 1
+        }
+        let parts = ["<", ">", "b", "r", "B", "R", "\\", "n", " ", "x", "/", "&lt;", "&gt;", "&lt", "&gt", "&#114;", "&#98;",
+                     "&#60", "&#62;", "#92;", "&bsol;", "&#110;", "#lt;", "#gt;", "<b>", "</b>", "<i>", "<span x>",
+                     "&amp;", "&am", "p;", ";", "#", "&", "<br>"]
+        var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+        func next() -> Int {
+            state ^= state << 13; state ^= state >> 7; state ^= state << 17
+            return Int(state % UInt64(parts.count))
+        }
+        var failures: [String] = []
+        for _ in 0..<40_000 {
+            let raw = (0..<(2 + next() % 6)).map { _ in parts[next()] }.joined()
+            let shown = MermaidParser.labelText(raw)
+            if breaks(shown) > breaks(raw), failures.count < 5 { failures.append("\(raw.debugDescription) → \(shown.debugDescription)") }
+        }
+        XCTAssertEqual(failures, [])
+        XCTAssertEqual(MermaidParser.labelText("&am<b></b>p;"), "&amp;", "a reference is read as written, not assembled")
+    }
+
+    /// A label is text to every step of reading a line, not only to
+    /// splitting it into statements: a `>`, `&` or `-` in an asymmetric
+    /// node's text, or in inline link text, is never syntax. Each
+    /// expectation is mermaid 12.2.0's.
+    func testSyntaxIsNeverReadInsideALabel() throws {
+        func edges(_ c: Flowchart) -> [String] { c.edges.map { "\($0.from)→\($0.to) \($0.label ?? "")" } }
+        func label(_ c: Flowchart, _ id: String) -> String? { c.nodes.first { $0.id == id }?.label }
+        let fan = try oneLine("flowchart LR; B --- S>\"a & b\"]")
+        XCTAssertEqual(edges(fan), ["B→S "])
+        XCTAssertEqual(label(fan, "S"), "a & b")
+        XCTAssertEqual(fan.nodes.first { $0.id == "S" }?.shape, .asymmetric)
+        let flag = try oneLine("flowchart LR; x>a & b] -..-> Y[(\"u\")]")
+        XCTAssertEqual(edges(flag), ["x→Y "])
+        XCTAssertEqual(label(flag, "x"), "a & b")
+        XCTAssertEqual(label(flag, "Y"), "u")
+        let both = try oneLine("flowchart LR; P>a & b] --x Q>\"a & b\"]")
+        XCTAssertEqual(edges(both), ["P→Q "])
+        XCTAssertEqual([label(both, "P"), label(both, "Q")], ["a & b", "a & b"])
+        XCTAssertEqual(edges(try oneLine("flowchart LR; A -- a-b --> B")), ["A→B a-b"])
+        XCTAssertEqual(edges(try oneLine("flowchart LR; A -- a & b --> B")), ["A→B a & b"])
+        XCTAssertEqual(edges(try oneLine("flowchart LR; A -- x --> B -- y --> C")), ["A→B x", "B→C y"])
+    }
+
+    /// `&` joins a fan only between whitespace (mermaid's `\s&\s`): written
+    /// between two id characters it's part of the id (`B&C`).
+    func testAnAmpersandInsideAnIdIsTheId() throws {
+        let c = try oneLine("graph LR; A-->B&C; C-->D")
+        XCTAssertEqual(c.nodes.map(\.id), ["A", "B&C", "C", "D"])
+        XCTAssertEqual(try oneLine("flowchart LR; A & B --> C").edges.map(\.from), ["A", "B"])
+    }
+
+    /// A start head that doesn't match the end isn't a head: mermaid reads it
+    /// as part of the link, so it counts toward the length (`<---` is
+    /// `----`, two ranks).
+    func testAnUnmatchedStartHeadCountsTowardTheLength() throws {
+        let c = try oneLine("flowchart LR; A <--- B; C <--o D; E o--> F; G x---> H")
+        XCTAssertEqual(c.edges.map(\.length), [2, 2, 2, 3])
+        XCTAssertEqual(c.edges.map(\.hasArrow), [false, true, true, true])
+        XCTAssertEqual(c.edges.map(\.backArrow), [false, false, false, false])
+    }
+
+    /// `style X …` names a node, and mermaid draws it even if nothing else
+    /// does; the styling itself is still ignored. (`class` and `click` lines
+    /// don't make one.)
+    func testAStyleLineNamesItsNode() throws {
+        let c = try oneLine("flowchart LR; A --> B; style Z fill:#f96,stroke:#333; class Q hot; click R cb")
+        XCTAssertEqual(c.nodes.map(\.id), ["A", "B", "Z"])
+        XCTAssertEqual(c.nodes.last?.label, "Z")
     }
 
     /// Splitting is linear: a long run of blanks after a `;` once rescanned
